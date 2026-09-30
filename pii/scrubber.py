@@ -1,4 +1,7 @@
-import re, hashlib, functools
+import re, hashlib, functools, logging
+
+logger = logging.getLogger(__name__)
+
 
 SALT = "fade-demo-salt"
 
@@ -78,12 +81,30 @@ OCR_SCALE = 2   # small text (e.g. screen recordings) is missed at 1x
 
 
 def _ocr_boxes(img):
-    import pytesseract
-    from pytesseract import Output
-    from PIL import Image
+    try:
+        import pytesseract
+        from pytesseract import Output
+    except ImportError:
+        logger.warning(
+            "[PII] pytesseract not installed — OCR-based text detection skipped. "
+            "Install with: pip install pytesseract"
+        )
+        return [], []
     import os
-    if os.name == 'nt' and os.path.exists(r'C:\Program Files\Tesseract-OCR\tesseract.exe'):
-        pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    from PIL import Image
+
+    #   locate Tesseract — prefer portable copy bundled in AIModels/tesseract/
+    _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
+    _PORTABLE  = os.path.join(_REPO_ROOT, 'AIModels', 'tesseract', 'tesseract.exe')
+    if os.path.isfile(_PORTABLE):
+        pytesseract.pytesseract.tesseract_cmd = _PORTABLE
+    # else: use whatever 'tesseract' is on PATH (Linux / macOS / system install)
+
+    #   point TESSDATA_PREFIX to AIModels/tessdata/ so eng.traineddata is found
+    _TESSDATA = os.path.join(_REPO_ROOT, 'AIModels', 'tessdata')
+    if os.path.isdir(_TESSDATA):
+        os.environ.setdefault('TESSDATA_PREFIX', _TESSDATA)
+
     big = img.convert("L").resize((img.width * OCR_SCALE, img.height * OCR_SCALE), Image.LANCZOS)
     d = pytesseract.image_to_data(big, output_type=Output.DICT)
     lines = {}
@@ -100,8 +121,7 @@ def _ocr_boxes(img):
         if not spans:
             continue
         found += [label for _, _, label in spans]
-        # Over-redact on purpose: OCR can misread a word, so blank from the first
-        # sensitive word to the END of the line instead of only the matched words.
+         
         first = min(s for s, _, _ in spans)
         k = OCR_SCALE
         sel = [wd for (ws, we), wd in zip(offsets, words) if we > first]

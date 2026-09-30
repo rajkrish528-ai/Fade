@@ -17,6 +17,8 @@ import TextToolPanel from './tools/TextToolPanel';
 import BrushToolPanel from './tools/BrushToolPanel';
 import EraserToolPanel from './tools/EraserToolPanel';
 import ShapeToolPanel from './tools/ShapeToolPanel';
+import TrackingWorkspace from './TrackingWorkspace';
+import PIIReviewPanel from './pii/PIIReviewPanel';
 
 //   Props  
 
@@ -66,10 +68,12 @@ const makeImageLayoutJson = (): FlexLayout.IJsonModel => ({
             weight: 30,
             selected: 0,
             children: [
-              { type: 'tab', name: 'Inspector', component: 'inspector', enableClose: false },
-              { type: 'tab', name: 'Effects', component: 'effects', enableClose: false },
+              { type: 'tab', name: 'Inspector',  component: 'inspector',  enableClose: false },
+              { type: 'tab', name: 'Effects',     component: 'effects',    enableClose: false },
               { type: 'tab', name: 'Transitions', component: 'transitions', enableClose: false },
-              { type: 'tab', name: 'Tools', component: 'tools', enableClose: false },
+              { type: 'tab', name: 'Tools',       component: 'tools',      enableClose: false },
+              { type: 'tab', name: 'Tracking',    component: 'tracking',   enableClose: false },
+              { type: 'tab', name: 'PII',         component: 'pii',        enableClose: false },
             ],
           },
         ],
@@ -163,6 +167,15 @@ function ImageWorkspaceInner({ compId, compName }: InnerProps) {
         _defaultImageCompName = created.name || 'Image Editor';
         setResolvedId(created.compId);
         setResolvedName(created.name || 'Image Editor');
+
+        // Auto-create 10 default layers for a fresh image comp
+        const { addTrack } = await import('../api/useApi');
+        for (let i = 1; i <= 10; i++) {
+          try {
+            await addTrack('video', `Layer ${i}`, created.compId);
+          } catch { /* ignore individual failures */ }
+        }
+        window.dispatchEvent(new CustomEvent('fade:tracks-changed'));
       })
       .catch(() => {})
       .finally(() => { _imgCreating = false; });
@@ -234,6 +247,7 @@ function ImageWorkspaceInner({ compId, compName }: InnerProps) {
     );
   })();
 
+  // Render tab node content
   const factory = (node: FlexLayout.TabNode) => {
     switch (node.getComponent()) {
       case 'library':
@@ -252,10 +266,49 @@ function ImageWorkspaceInner({ compId, compName }: InnerProps) {
         return <TransitionPanel />;
       case 'tools':
         return toolPanel;
+      case 'tracking': {
+        const selClipId = state.tracks
+          .flatMap(t => t.clips)
+          .find(c => c.isSelected)?.id ?? null;
+        return (
+          <TrackingWorkspace
+            selectedClipId={selClipId}
+            totalFrames={state.totalFrames}
+            fps={state.fps}
+          />
+        );
+      }
+      case 'pii': {
+        const selClip = state.tracks.flatMap(t => t.clips).find(c => c.isSelected)
+        return (
+          <PIIReviewPanel
+            assetId={selClip?.assetId ?? ''}
+            assetType='image'
+          />
+        )
+      }
       default:
         return <div className="vp" />;
     }
   };
+
+   React.useEffect(() => {
+ 
+    let attempts = 0;
+    const interval = setInterval(() => {
+      const stamps = document.querySelectorAll(
+        '.image-ws-mode .flexlayout__tab_button .flexlayout__tab_button_stamp'
+      );
+      stamps.forEach(stamp => {
+        if (stamp.textContent?.trim() === 'Tools') {
+          const btn = stamp.closest('.flexlayout__tab_button');
+          if (btn) btn.classList.add('iw-hide-tools-tab');
+        }
+      });
+      if (stamps.length > 0 || ++attempts > 20) clearInterval(interval);
+    }, 100);
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <FlexLayout.Layout

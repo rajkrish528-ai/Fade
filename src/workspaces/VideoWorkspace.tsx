@@ -16,6 +16,8 @@ import EraserToolPanel from './tools/EraserToolPanel'
 import ShapeToolPanel from './tools/ShapeToolPanel'
 import TransitionPanel from './inspector/TransitionPanel'
 import CompositionsPanel from './compositions/CompositionsPanel'
+import TrackingWorkspace from './TrackingWorkspace'
+import PIIReviewPanel from './pii/PIIReviewPanel'
 
 
 
@@ -47,10 +49,12 @@ const layoutJson: FlexLayout.IJsonModel = {
             weight: 30,
             selected: 0,
             children: [
-              { type: 'tab', name: 'Inspector', component: 'inspector', enableClose: false },
-              { type: 'tab', name: 'Effects', component: 'effects', enableClose: false },
-              { type: 'tab', name: 'Transitions',  component: 'transitions',  enableClose: false },
-              { type: 'tab', name: 'Tools', component: 'tools', enableClose: false },
+              { type: 'tab', name: 'Inspector',  component: 'inspector',  enableClose: false },
+              { type: 'tab', name: 'Effects',     component: 'effects',    enableClose: false },
+              { type: 'tab', name: 'Transitions', component: 'transitions', enableClose: false },
+              { type: 'tab', name: 'Tools',       component: 'tools',      enableClose: false },
+              { type: 'tab', name: 'Tracking',    component: 'tracking',   enableClose: false },
+              { type: 'tab', name: 'PII',         component: 'pii',        enableClose: false },
             ],
           },
         ],
@@ -64,8 +68,8 @@ const layoutJson: FlexLayout.IJsonModel = {
   },
 }
 
- 
 const LAYOUT_DEBOUNCE_MS = 500
+const LAYOUT_VERSION = 4  // bump when tabs are added/removed
 
 function makeDefaultModel() {
   return FlexLayout.Model.fromJson(layoutJson)
@@ -98,20 +102,24 @@ function WorkspaceInner() {
     api?.layoutLoad?.().then((json: string | null) => {
       if (!json) return
       try {
-        modelRef.current = FlexLayout.Model.fromJson(JSON.parse(json))
-        forceUpdate() 
+        const saved = JSON.parse(json)
+        if (saved.__v !== LAYOUT_VERSION) {
+          console.log('[Layout] version mismatch — using default layout')
+          return
+        }
+        modelRef.current = FlexLayout.Model.fromJson(saved)
+        forceUpdate()
       } catch (e) {
         console.warn('[Layout] saved layout invalid, using default', e)
       }
     }).catch(() => {})
- 
   }, [])
 
   // Save layout debounced on every model change
   const onModelChange = useCallback((model: FlexLayout.Model) => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(() => {
-      const json = JSON.stringify(model.toJson())
+      const json = JSON.stringify({ __v: LAYOUT_VERSION, ...model.toJson() })
       api?.layoutSave?.(json).catch(() => {})
     }, LAYOUT_DEBOUNCE_MS)
   }, [api])
@@ -162,6 +170,27 @@ function WorkspaceInner() {
       case 'transitions': return <TransitionPanel />
       case 'tools': return toolPanel
       case 'compositions': return <CompositionsPanel />
+      case 'tracking': {
+        const selClipId = state.tracks
+          .flatMap(t => t.clips)
+          .find(c => c.isSelected)?.id ?? null
+        return (
+          <TrackingWorkspace
+            selectedClipId={selClipId}
+            totalFrames={state.totalFrames}
+            fps={state.fps}
+          />
+        )
+      }
+      case 'pii': {
+        const selClip = state.tracks.flatMap(t => t.clips).find(c => c.isSelected)
+        return (
+          <PIIReviewPanel
+            assetId={selClip?.assetId ?? ''}
+            assetType='video'
+          />
+        )
+      }
       default: return <div className="vp" />
     }
   }

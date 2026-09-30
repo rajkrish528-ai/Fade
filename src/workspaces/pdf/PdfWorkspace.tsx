@@ -18,6 +18,8 @@ import ShapeToolPanel from '../tools/ShapeToolPanel';
 import PagesPanel, { type PdfPage } from './PagesPanel';
 import LibraryPanel from '../library/LibraryPanel';
 import { type AssetItem } from '../../api/useApi';
+import TrackingWorkspace from '../TrackingWorkspace';
+import PIIReviewPanel from '../pii/PIIReviewPanel';
 
 // PdfTimeline 
 function PdfTimeline() {
@@ -68,10 +70,12 @@ const makePdfLayoutJson = (): FlexLayout.IJsonModel => ({
             weight: 30,
             selected: 0,
             children: [
-              { type: 'tab', name: 'Inspector', component: 'inspector', enableClose: false },
-              { type: 'tab', name: 'Effects', component: 'effects', enableClose: false },
+              { type: 'tab', name: 'Inspector',  component: 'inspector',  enableClose: false },
+              { type: 'tab', name: 'Effects',     component: 'effects',    enableClose: false },
               { type: 'tab', name: 'Transitions', component: 'transitions', enableClose: false },
-              { type: 'tab', name: 'Tools', component: 'tools', enableClose: false },
+              { type: 'tab', name: 'Tools',       component: 'tools',      enableClose: false },
+              { type: 'tab', name: 'Tracking',    component: 'tracking',   enableClose: false },
+              { type: 'tab', name: 'PII',         component: 'pii',        enableClose: false },
             ],
           },
         ],
@@ -105,7 +109,7 @@ interface PdfWorkspaceProps {
 export default function PdfWorkspace({ docId, docName }: PdfWorkspaceProps) {
   return (
     <TimelineProvider>
-      <div className="video-ws image-ws-mode">
+      <div className="video-ws image-ws-mode pdf-ws-mode">
         <PdfWorkspaceInner docId={docId ?? null} docName={docName ?? 'Untitled Document'} />
       </div>
     </TimelineProvider>
@@ -274,7 +278,29 @@ function PdfWorkspaceInner({ docId, docName }: { docId: string | null; docName: 
       case 'effects': return <EffectsPanel />;
       case 'transitions': return <TransitionPanel />;
       case 'tools': return toolPanel;
+      case 'tracking': {
+        const selClipId = state.tracks
+          .flatMap(t => t.clips)
+          .find(c => c.isSelected)?.id ?? null;
+        return (
+          <TrackingWorkspace
+            selectedClipId={selClipId}
+            totalFrames={state.totalFrames}
+            fps={state.fps}
+          />
+        );
+      }
+      case 'pii': {
+        const selClip = state.tracks.flatMap(t => t.clips).find(c => c.isSelected)
+        return (
+          <PIIReviewPanel
+            assetId={selClip?.assetId ?? ''}
+            assetType='text'
+          />
+        )
+      }
       default: return <div className="vp" />;
+
     }
   };
 

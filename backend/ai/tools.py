@@ -1,4 +1,4 @@
-﻿ 
+ 
 from __future__ import annotations
 import json
 import os
@@ -3186,33 +3186,29 @@ def blur_tracked_region(
     Use for: "blur the face", "hide the email", "pixelate the phone number"
     """
     try:
-        # Get track metadata
-        import requests
-        r = requests.get(f"http://localhost:7860/tracking/track/{track_id}", timeout=5)
-        r.raise_for_status()
-        track = r.json()
+        # Get track metadata from in-process service (no HTTP hop needed)
+        from backend.tracking.service import get_track
+        track_data = get_track(track_id)
+        if not track_data:
+            return f"Track {track_id!r} not found. Run start_tracking first."
 
-        from_frame = track.get("from_frame", 0)
-        to_frame   = track.get("to_frame", 300)
-        duration   = to_frame - from_frame
+        from_frame = track_data.get("from_frame", 0)
+        to_frame   = track_data.get("to_frame", 300)
+        duration   = max(1, to_frame - from_frame)
 
-        # Find a free overlay track
-        overlay = _post("/timeline/find-free-overlay-track", {
-            "startFrame": from_frame, "endFrame": to_frame
-        })
-        track_idx = overlay.get("track_index", 1)
-
-        # Create a shape clip (rect) on the overlay track
-        shape = _post("/clips/add-shape", {
-            "trackIndex": track_idx,
+        # Create a rect ShapeClip — /clips/shape auto-picks the top empty track
+        shape = _post("/clips/shape", {
             "startFrame": from_frame,
             "duration": duration,
-            "shapeType": "rect",
-            "fillColor": [0, 0, 0, 0],     # transparent fill
-            "strokeWidth": 0,
+            "style": {
+                "shapeType": "rect",
+                "fillColor": [0, 0, 0, 0],
+                "strokeWidth": 0,
+                "w": 100,
+                "h": 100,
+            },
         })
         shape_clip_id = shape.get("clipId", "")
-
         if not shape_clip_id:
             return "Failed to create blur rect shape clip."
 
@@ -3222,7 +3218,7 @@ def blur_tracked_region(
             "params": {"radius": blur_strength}
         })
 
-        # Set expressions to follow the track
+        # Set position/size expressions — correct route: POST /clips/{id}/expression/{param}
         exprs = {
             "pos_x":   f'track("{track_id}", frame, "cx") - comp_w / 2',
             "pos_y":   f'track("{track_id}", frame, "cy") - comp_h / 2',
@@ -3230,9 +3226,7 @@ def blur_tracked_region(
             "shape_h": f'track("{track_id}", frame, "h") * {scale}',
         }
         for param, expr in exprs.items():
-            _post(f"/clips/{shape_clip_id}/set-expression", {
-                "param": param, "expression": expr
-            })
+            _post(f"/clips/{shape_clip_id}/expression/{param}", {"expression": expr})
 
         return (
             f"Blur rect created and linked to track.\n"
@@ -3280,10 +3274,9 @@ def link_track_to_clip(
             else:
                 exprs[prop] = f'track("{track_id}", frame, "cx")'  # generic
 
+        # Correct route: POST /clips/{id}/expression/{param}
         for param, expr in exprs.items():
-            _post(f"/clips/{target_clip_id}/set-expression", {
-                "param": param, "expression": expr
-            })
+            _post(f"/clips/{target_clip_id}/expression/{param}", {"expression": expr})
 
         return (
             f"Linked track {track_id} to clip {target_clip_id}.\n"
@@ -4622,3 +4615,106 @@ ALL_TOOLS.extend([list_platform_presets, dispatch_task, get_campaign_status])
 TRACKING_TOOLS = [start_tracking, get_tracking_progress, list_tracks, blur_tracked_region, link_track_to_clip]
 ALL_TOOLS.extend(TRACKING_TOOLS)
 
+
+# ---------------------------------------------------------------------------
+# PII Tools  -  let the agent scan and sanitize assets for personal data
+# ---------------------------------------------------------------------------
+
+@tool
+def scan_asset_for_pii(asset_id: str) -> str:
+    """Scan a library asset for Personally Identifiable Information (PII).
+
+    Detects faces, license plates, emails, phone numbers, names, and other
+    PII in images, videos, and text files without modifying the original.
+
+    Args:
+        asset_id: The library asset ID to scan (from list_library_assets).
+
+    Returns:
+        A human-readable summary of detected PII with counts and types.
+    """
+    try:
+        result = _post("/pii/detect-by-id", {"asset_id": asset_id, "use_ner": True})
+        detections = result.get("detections", [])
+        if not detections:
+            return f"No PII detected in asset {asset_id} ({result.get('filename', '')})."
+        counts: dict[str, int] = {}
+        for d in detections:
+            t = d.get("type", "UNKNOWN")
+            counts[t] = counts.get(t, 0) + 1
+        summary = ", ".join(f"{v}x {k}" for k, v in counts.items())
+        return (
+            f"Found {len(detections)} PII item(s) in {result.get('filename', asset_id)}: {summary}. "
+            f"Asset type: {result.get('assetType')}. "
+            f"Call sanitize_asset_pii(asset_id='{asset_id}') to redact them."
+        )
+    except Exception as e:
+        return f"PII scan failed for asset {asset_id}: {e}"
+
+
+@tool
+def sanitize_asset_pii(asset_id: str, auto_redact_all: bool = True) -> str:
+    """Sanitize a library asset by redacting all detected PII.
+
+    This runs the full pipeline server-side:
+      1. Detects PII in the asset.
+      2. Produces a sanitized copy (faces blurred, text redacted, etc.).
+      3. Registers the sanitized copy in the library.
+      4. Swaps ALL timeline clips that referenced the original to the sanitized version.
+      5. Marks the original as RESTRICTED and the sanitized copy as SANITIZED.
+
+    The original file is NOT deleted � it is marked RESTRICTED so AI tools
+    will not use it again.
+
+    Args:
+        asset_id:        Library asset ID to sanitize.
+        auto_redact_all: If True (default), auto-detect and redact all PII.
+
+    Returns:
+        A summary of the sanitization result including clips swapped.
+    """
+    try:
+        result = _post_long(
+            "/pii/sanitize-by-id",
+            {"asset_id": asset_id, "auto_redact_all": auto_redact_all},
+            timeout=300,
+        )
+        return (
+            f"Sanitization complete for asset {asset_id[:8]}. "
+            f"Redacted {result.get('detectionCount', 0)} PII item(s). "
+            f"Sanitized file: '{result.get('sanitizedFilename')}' "
+            f"(new asset ID: {result.get('sanitizedAssetId', '')[:8]}). "
+            f"Timeline clips updated: {result.get('clipsSwapped', 0)}. "
+            f"Original asset is now RESTRICTED."
+        )
+    except Exception as e:
+        return f"PII sanitization failed for asset {asset_id}: {e}"
+
+
+@tool
+def get_asset_pii_state(asset_id: str) -> str:
+    """Get the PII security state of a library asset.
+
+    Returns whether the asset is clean (NONE), contains known PII (RESTRICTED),
+    or has already been sanitized (SANITIZED).
+
+    Args:
+        asset_id: Library asset ID to check.
+    """
+    try:
+        result = _get(f"/pii/security-state/{asset_id}")
+        state = result.get("securityState", "UNKNOWN")
+        san_id = result.get("sanitizedAssetId")
+        orig_id = result.get("originalAssetId")
+        msg = f"Asset {asset_id[:8]} security state: {state}."
+        if san_id:
+            msg += f" Sanitized copy available: {san_id[:8]}."
+        if orig_id:
+            msg += f" This is a sanitized copy of original: {orig_id[:8]}."
+        return msg
+    except Exception as e:
+        return f"Could not fetch PII state for {asset_id}: {e}"
+
+
+PII_TOOLS = [scan_asset_for_pii, sanitize_asset_pii, get_asset_pii_state]
+ALL_TOOLS.extend(PII_TOOLS)

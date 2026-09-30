@@ -1,15 +1,19 @@
-﻿"""
-perceptual.py - Perceptual video hashing for Fade artifact integrity.
-Uses `videohash` which extracts frames, builds a wavelet-based 64-bit hash.
-Survives: H.264/H.265 re-encode, platform upload, resize, bitrate change.
-Fails on: >10deg rotation, reversed playback, >30% crop.
-"""
+ 
 from __future__ import annotations
 import logging
 
 logger = logging.getLogger(__name__)
 
-PHASH_THRESHOLD = 10  # Hamming bits. <= 10 = same video (tuned for platform re-encode)
+PHASH_THRESHOLD = 10   
+
+ 
+try:
+    import PIL.Image as _pil_img
+    if not hasattr(_pil_img, "ANTIALIAS"):
+        _pil_img.ANTIALIAS = _pil_img.LANCZOS   
+except Exception:
+    pass
+#  
 
 try:
     from videohash import VideoHash as _VideoHash
@@ -20,13 +24,16 @@ except ImportError:
 
 
 def compute_phash(video_path: str) -> str | None:
-    """
-    Compute perceptual hash for a video file.
-    Returns 16-char hex string (64 bits) or None if videohash unavailable.
-    Takes 5-30s depending on video length (CPU-bound frame extraction).
-    """
+     
     if not _VIDEOHASH_AVAILABLE:
         return None
+     
+    try:
+        import PIL.Image as _pi
+        if not hasattr(_pi, "ANTIALIAS"):
+            _pi.ANTIALIAS = _pi.LANCZOS  # type: ignore[attr-defined]
+    except Exception:
+        pass
     try:
         vh = _VideoHash(path=video_path)
         return vh.hash_hex
